@@ -1,0 +1,30 @@
+{
+  "name": "emarsi-okx-ema-scanner",
+  "version": "1.0.0",
+  "description": "OKX USDT spot EMA crossover scanner with Telegram alerts and web dashboard (monitoring only).",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "scan-once": "node server.js --scan-once",
+    "test": "node --test",
+    "test:watch": "node --test --watch test/"
+  },
+  "keywords": [
+    "okx",
+    "ema",
+    "crossover",
+    "scanner",
+    "telegram",
+    "trading"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3"
+  }
+}

@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>مُراقب تقاطع EMA — OKX</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --card: #131c2e;
+    --card-2: #1a2538;
+    --border: #24324a;
+    --text: #e6edf7;
+    --muted: #8ea3bf;
+    --accent: #4f8cff;
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f59e0b;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", Tahoma, "Noto Kufi Arabic", Arial, sans-serif;
+    padding: 16px;
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  .hidden { display: none !important; }
+
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+    justify-content: space-between; padding: 4px 0 18px;
+  }
+  header h1 { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  header h1 .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--muted); }
+  header h1 .dot.ok { background: var(--green); box-shadow: 0 0 10px var(--green); }
+  header h1 .dot.run { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: pulse 1s infinite; }
+  header h1 .dot.err { background: var(--red); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .badge {
+    padding: 4px 10px; border-radius: 999px; font-size: 12px; border: 1px solid var(--border);
+  }
+  .badge.ok { color: var(--green); border-color: var(--green); }
+  .badge.run { color: var(--amber); border-color: var(--amber); }
+  .badge.err { color: var(--red); border-color: var(--red); }
+  .note { font-size: 12px; color: var(--muted); }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .card .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .card .value { font-size: 20px; font-weight: 700; direction: ltr; text-align: right; }
+  .card .sub { font-size: 12px; color: var(--muted); direction: ltr; text-align: right; margin-top: 3px; }
+
+  .panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px;
+  }
+  .panel .head {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+  }
+  .panel .head h2 { font-size: 15px; font-weight: 600; }
+  .panel .head .hint { font-size: 12px; color: var(--muted); }
+
+  .tabs { display: flex; gap: 8px; }
+  .tab {
+    background: var(--card-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .tab.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  .tf-bar {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 14px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 14px;
+  }
+  .tf-bar .label { font-size: 12px; color: var(--muted); }
+
+  .change-select {
+    background: var(--card-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 2px 6px; font-size: 11px; font-family: inherit;
+    cursor: pointer; margin-top: 4px; display: block;
+  }
+
+  .btn {
+    background: var(--card-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 14px; font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .btn:hover { border-color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    text-align: right; color: var(--muted); font-weight: 500; font-size: 11.5px;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+  }
+  tbody td { padding: 10px 12px; border-bottom: 1px solid #1a2439; }
+  tbody tr:hover { background: #16223a; }
+  tbody tr.matched { background: rgba(34,197,94,.06); }
+  .sym { font-weight: 700; font-family: Consolas, monospace; direction: ltr; }
+  .num { direction: ltr; font-family: Consolas, monospace; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .pill { padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border); }
+  .pill.on { color: var(--green); border-color: var(--green); }
+  .pill.off { color: var(--muted); }
+
+  #error { background: rgba(239,68,68,.08); border: 1px solid var(--red); color: #fca5a5;
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
+
+  #stale { background: rgba(239,68,68,.14); border: 1px solid var(--red); color: #fca5a5;
+    border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; font-size: 14px;
+    font-weight: 600; }
+
+  footer {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 10px; color: var(--muted); font-size: 12px; padding: 6px 0 20px;
+  }
+  .muted { color: var(--muted); }
+  .empty { text-align: center; color: var(--muted); padding: 28px 0; font-size: 13px; }
+  @media (max-width: 640px) {
+    table { font-size: 11.5px; }
+    thead th, tbody td { padding: 8px 6px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>
+    <span class="dot" id="status-dot"></span>
+    مُراقب تقاطع EMA — OKX
+  </h1>
+  <div class="note">أداة مراقبة وتنبيه فقط — بدون تنفيذ أوامر تداول. القرار النهائي يدوي دائمًا ⚠️</div>
+</header>
+
+<div class="tf-bar">
+  <span class="label">فريم الإشارة:</span>
+  <div class="tabs" id="tf-toggle"></div>
+</div>
+
+<div id="stale" class="hidden"></div>
+<div id="error" class="hidden"></div>
+
+<div class="cards">
+  <div class="card">
+    <div class="label">الحالة</div>
+    <div class="value"><span id="status-text">—</span></div>
+    <div class="sub"></div>
+  </div>
+  <div class="card">
+    <div class="label">آخر دورة مسح</div>
+    <div class="value" id="last-scan">—</div>
+    <div class="sub" id="last-scan-dur"></div>
+  </div>
+  <div class="card">
+    <div class="label">الدورة القادمة خلال</div>
+    <div class="value" id="next-scan">—</div>
+    <div class="sub" id="next-scan-sch"></div>
+  </div>
+  <div class="card">
+    <div class="label">العملات المفحوصة</div>
+    <div class="value" id="checked">—</div>
+    <div class="sub">آخر دورة</div>
+  </div>
+  <div class="card">
+    <div class="label">إشارات مطابقة الآن</div>
+    <div class="value" id="matched-count">—</div>
+    <div class="sub">بشرط التقاطع + RSI + الحجم</div>
+  </div>
+  <div class="card">
+    <div class="label">فلتر السيولة (24س)</div>
+    <div class="value" id="volume-filter">—</div>
+    <div class="sub" id="volume-filter-sub">الحد الأدنى للحجم اليومي</div>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="head">
+    <h2>إعدادات الاستراتيجية <span class="muted" id="strategy"></span></h2>
+    <div class="tabs">
+      <button class="tab active" data-view="matched">المطابقة الآن</button>
+      <button class="tab" data-view="all">كل العملات</button>
+      <button class="btn" id="refresh-btn">تحديث الآن</button>
+    </div>
+  </div>
+  <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr>
+          <th>الرمز</th>
+          <th>السعر</th>
+          <th>السعر الحالي</th>
+          <th title="سعر إغلاق شمعة الإشارة أول ما اكتشفت، والنسبة مقابل السعر الحالي">سعر الإشارة</th>
+          <th>
+            <span>نسبة التغير</span>
+            <select id="change-select" class="change-select" title="فترة حساب نسبة التغير — يُرتَّب العمود تنازليًا تلقائيًا">
+              <option value="change_4h" selected>4س</option>
+              <option value="change_1h">1س</option>
+              <option value="change_15m">15م</option>
+              <option value="change_5m">5م</option>
+            </select>
+          </th>
+          <th>RSI</th>
+          <th>تقاطع EMA</th>
+          <th>الشموع منذ الاكتشاف</th>
+          <th>وقت الاكتشاف</th>
+          <th>الحجم</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div id="empty" class="empty hidden">لا توجد نتائج بعد — انتظر اكتمال أول دورة مسح.</div>
+</div>
+
+<footer>
+  <span>آخر تحديث للصفحة: <span id="last-updated">—</span> · تحديث تلقائي خلال <span id="refresh-count">60</span> ث</span>
+  <span id="clock" class="muted"></span>
+</footer>
+
+<script>
+'use strict';
+
+const $ = (id) => document.getElementById(id);
+let view = 'matched';
+let refreshSeconds = 60;
+let changeField = 'change_4h';
+let lastSymbols = [];
+let selectedTf = null; // set from server config on first load
+
+function tfLabel(tf) {
+  const m = /^(\d+)([mhhdwW])$/.exec(tf || '');
+  if (!m) return tf || '—';
+  const n = Number(m[1]);
+  const u = m[2].toLowerCase();
+  if (u === 'm') return n === 1 ? 'دقيقة' : `${n} دقائق`;
+  if (u === 'h') return n === 1 ? 'ساعة 1' : `${n} ساعات`;
+  if (u === 'd') return n === 1 ? 'يوم' : `${n} أيام`;
+  if (u === 'w') return n === 1 ? 'أسبوع' : `${n} أسابيع`;
+  return tf;
+}
+
+function renderTfToggle(timeframes) {
+  const wrap = $('tf-toggle');
+  wrap.innerHTML = '';
+  (timeframes || []).forEach((tf) => {
+    const b = document.createElement('button');
+    b.className = 'tab tf-btn' + (tf === selectedTf ? ' active' : '');
+    b.dataset.tf = tf;
+    b.textContent = tfLabel(tf);
+    wrap.appendChild(b);
+  });
+}
+
+function showError(msg) {
+  const el = $('error');
+  if (msg) { el.textContent = msg; el.classList.remove('hidden'); }
+  else el.classList.add('hidden');
+}
+
+function fmtPrice(x) {
+  if (!Number.isFinite(x)) return '—';
+  if (x >= 1) return x.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  return x.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+// Live ticker price cell: current price + difference vs the candle signal price.
+function liveCell(r) {
+  if (!Number.isFinite(r.ticker_price)) {
+    return `<span class="muted">—</span>`;
+  }
+  let diff = '';
+  if (Number.isFinite(r.price) && r.price > 0 && r.ticker_price !== r.price) {
+    const pct = ((r.ticker_price - r.price) / r.price) * 100;
+    const cls = pct >= 0 ? 'pos' : 'neg';
+    diff = `<span class="num ${cls}" style="display:block;font-size:11px;">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% vs السعر</span>`;
+  }
+  return `<span class="num">${fmtPrice(r.ticker_price)}</span>${diff}`;
+}
+
+// Signal-price cell: the close of the candle where the signal first appeared
+// (stored once at first detection) + the move vs the current price since then.
+function signalCell(r) {
+  if (!Number.isFinite(r.cross_price)) return '<span class="muted">—</span>';
+  const sp = `<span class="num">${fmtPrice(r.cross_price)}</span>`;
+  const cur = Number.isFinite(r.ticker_price) ? r.ticker_price : (Number.isFinite(r.price) ? r.price : null);
+  if (cur == null || cur <= 0 || cur === r.cross_price) return sp;
+  const pct = ((cur - r.cross_price) / r.cross_price) * 100;
+  const cls = pct >= 0 ? 'pos' : 'neg';
+  return `${sp}<span class="num ${cls}" style="display:block;font-size:11px;">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% منذ الإشارة</span>`;
+}
+
+function fmtChange(v) {
+  if (!Number.isFinite(v)) return '—';
+  const cls = v >= 0 ? 'pos' : 'neg';
+  return `<span class="num ${cls}">${v >= 0 ? '+' : ''}${v.toFixed(2)}%</span>`;
+}
+
+function fmtUsd(v) {
+  if (!Number.isFinite(v)) return '—';
+  if (v >= 1e9) return `$${(v / 1e9).toLocaleString('en-US', { maximumFractionDigits: 2 })}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toLocaleString('en-US', { maximumFractionDigits: 2 })}M`;
+  if (v >= 1e3) return `$${(v / 1e3).toLocaleString('en-US', { maximumFractionDigits: 1 })}K`;
+  return `$${v.toLocaleString('en-US')}`;
+}
+
+function fmtRsi(r) {
+  return r === null || r === undefined ? '—' : `<span class="num">${Number(r).toFixed(1)}</span>`;
+}
+
+function relTime(ts) {
+  if (!ts) return '—';
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'الآن';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `قبل ${m} دقيقة`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `قبل ${h} ساعة`;
+  const d = Math.floor(h / 24);
+  return `قبل ${d} يوم`;
+}
+
+/** 12-hour Arabic clock time: today → "2:46 ص", yesterday → "أمس 2:46 ص", older → "2:46 ص 12/8". */
+function clockTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  const now = new Date();
+  let h = d.getHours();
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const period = h < 12 ? 'ص' : 'م';
+  h = h % 12 || 12;
+  const time = `${h}:${mm} ${period}`;
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (sameDay) return time;
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (d.getFullYear() === y.getFullYear() && d.getMonth() === y.getMonth() && d.getDate() === y.getDate()) {
+    return `أمس ${time}`;
+  }
+  return `${time} ${d.getDate()}/${d.getMonth() + 1}`;
+}
+
+/** Candle duration of an OKX bar in milliseconds ("1H" → 3_600_000, "4H" → 14_400_000). */
+function tfBarMs(tf) {
+  const m = /^(\d+)([mhhdwW])$/.exec(tf || '');
+  if (!m) return null;
+  const n = Number(m[1]);
+  const u = m[2].toLowerCase();
+  const unitMs = u === 'm' ? 60e3 : u === 'h' ? 3600e3 : u === 'd' ? 86400e3 : 7 * 86400e3;
+  return n * unitMs;
+}
+
+/**
+ * Complete candles since the SIGNAL candle (cross_ts = `last.ts` captured at
+ * first detection), falling back to detected_at for alerts created before the
+ * cross_ts column existed. Bigger number → older signal. Only meaningful for
+ * rows that are currently matched.
+ */
+function candlesSince(r) {
+  const ref = r.cross_ts != null ? r.cross_ts : r.detected_at;
+  if (r.matched !== 1 || !ref) return '<span class="muted">—</span>';
+  const barMs = tfBarMs(selectedTf);
+  if (!barMs) return '<span class="muted">—</span>';
+  const n = Math.max(0, Math.floor((Date.now() - ref) / barMs));
+  if (n === 0) return '<span class="pill on">إشارة جديدة</span>';
+  const word = n <= 2 || n > 10 ? 'شمعة' : 'شموع';
+  return `<span class="num">منذ ${n} ${word}</span>`;
+}
+
+function statusUI(status) {
+  const dot = $('status-dot');
+  const text = $('status-text');
+  dot.className = 'dot';
+  switch (status) {
+    case 'running': dot.classList.add('run'); text.textContent = 'جارٍ المسح الآن…'; break;
+    case 'error': dot.classList.add('err'); text.textContent = 'خطأ في آخر دورة'; break;
+    default: dot.classList.add('ok'); text.textContent = 'يعمل بشكل طبيعي'; break;
+  }
+}
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function fmtClock(ts) {
+  if (!ts) return { mmss: '—', hhmm: '—', date: '—' };
+  const diff = ts - Date.now();
+  const neg = diff < 0;
+  const a = Math.floor(Math.abs(diff) / 1000);
+  const mm = Math.floor(a / 60), ss = a % 60;
+  return {
+    mmss: (neg ? '-' : '') + pad(mm) + ':' + pad(ss),
+    hhmm: new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+    date: new Date(ts).toLocaleDateString('en-US'),
+  };
+}
+
+function renderSymbols(symbols) {
+  const tb = $('rows');
+  tb.innerHTML = '';
+  $('empty').classList.toggle('hidden', symbols.length > 0);
+  const isMatchedView = view === 'matched';
+  const rows = (isMatchedView ? symbols.filter((r) => r.matched === 1) : symbols).slice();
+  // Sort by the selected change period, descending (highest positive first,
+  // most negative last). Rows without a value for this period go to the bottom.
+  rows.sort((a, b) => {
+    const va = a[changeField];
+    const vb = b[changeField];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    return vb - va;
+  });
+
+  rows.forEach((r) => {
+    const tr = document.createElement('tr');
+    if (r.matched === 1) tr.className = 'matched';
+    const cross = r.ema_cross === 1 ? '<span class="pill on">تقاطع صاعد ▲</span>' : '<span class="pill off">—</span>';
+    const vol = r.volume_ok === 1 ? '<span class="pill on">فوق المتوسط</span>' : '<span class="pill off">—</span>';
+    tr.innerHTML = `
+      <td><span class="sym">${r.symbol.replace('-USDT', '')}</span><span class="muted">/USDT</span></td>
+      <td><span class="num">${fmtPrice(r.price)}</span><span class="muted" style="display:block;font-size:11px;">آخر مسح ${relTime(r.scan_at)}</span></td>
+      <td>${liveCell(r)}</td>
+      <td>${signalCell(r)}</td>
+      <td>${fmtChange(r[changeField])}</td>
+      <td>${fmtRsi(r.rsi)}</td>
+      <td>${cross}</td>
+      <td>${candlesSince(r)}</td>
+      <td>${clockTime(r.detected_at)}</td>
+      <td>${vol}</td>
+    `;
+    tb.appendChild(tr);
+  });
+}
+
+async function refresh() {
+  try {
+    showError('');
+    const tf = selectedTf || '';
+    const q = tf ? '?timeframe=' + encodeURIComponent(tf) : '';
+    const [ov, sym] = await Promise.all([
+      fetch('/api/overview' + q).then(r => r.json()),
+      fetch('/api/symbols' + q).then(r => r.json()),
+    ]);
+
+    statusUI(ov.status);
+    if (ov.lastError && ov.status === 'error') showError('آخر خطأ: ' + ov.lastError);
+
+    const staleEl = $('stale');
+    if (ov.stale && ov.lastScanAgeMs != null) {
+      const mins = Math.max(1, Math.round(ov.lastScanAgeMs / 60000));
+      staleEl.textContent = `تحذير: آخر مسح ناجح منذ أكثر من ${mins} دقيقة — الخادم متوقف أو الدورة الجدولة عالقة.`;
+      staleEl.classList.remove('hidden');
+    } else {
+      staleEl.classList.add('hidden');
+    }
+
+    const lastScan = ov.lastScanAt;
+    $('last-scan').textContent = lastScan ? fmtClock(lastScan).date + ' ' + fmtClock(lastScan).hhmm : '—';
+    $('last-scan-dur').textContent = ov.lastScanDurationMs ? `استغرق ${(ov.lastScanDurationMs / 1000).toFixed(1)} ثانية` : '';
+
+    const nxt = fmtClock(ov.nextScanAt);
+    $('next-scan').textContent = nxt.mmss;
+    $('next-scan').dataset.ts = ov.nextScanAt || '';
+    $('next-scan-sch').textContent = ov.nextScanAt ? 'عند ' + nxt.date + ' ' + nxt.hhmm : '—';
+
+    $('checked').textContent = ov.instrumentsLastCycle ?? '—';
+    $('matched-count').textContent = ov.matchedCount ?? '—';
+    if (ov.volumeFilterKept != null && ov.volumeFilterTotal != null) {
+      $('volume-filter').textContent = `${ov.volumeFilterKept} بعد الفلتر`;
+      $('volume-filter-sub').textContent =
+        `من أصل ${ov.volumeFilterTotal} زوج · الحد ≥ ${fmtUsd(ov.minVolumeUsd24h)}`;
+    } else {
+      $('volume-filter').textContent = '—';
+      $('volume-filter-sub').textContent = 'بانتظار أول دورة';
+    }
+
+    selectedTf = selectedTf || ov.timeframe;
+    renderTfToggle(ov.timeframes || [ov.timeframe]);
+    $('strategy').textContent =
+      `| EMA ${ov.emaFast}/${ov.emaSlow} · RSI ${ov.rsiMin}–${ov.rsiMax} · حجم SMA ${ov.volumeSma} · إطار ${tfLabel(selectedTf)}`;
+
+    renderSymbols(sym.symbols);
+    lastSymbols = sym.symbols;
+    $('last-updated').textContent = new Date().toLocaleTimeString('en-US');
+  } catch (e) {
+    showError('تعذّر الاتصال بالخادم. تأكد من تشغيل الخدمة: ' + e.message);
+  } finally {
+    refreshSeconds = 60;
+  }
+}
+
+function tick() {
+  if (refreshSeconds <= 0) { refresh(); return; }
+  $('refresh-count').textContent = refreshSeconds--;
+  const ovNext = Number($('next-scan').dataset.ts);
+  if (ovNext) $('next-scan').textContent = fmtClock(ovNext).mmss;
+  $('clock').textContent = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  // re-render relative detection times (light update of last cell) — skip for simplicity.
+}
+
+document.querySelectorAll('.tab[data-view]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab[data-view]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    view = btn.dataset.view;
+    refresh();
+  });
+});
+
+// Timeframe toggle (delegated): switching re-fetches from the backend for the
+// selected timeframe — no page reload, the data is already stored server-side.
+$('tf-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tf-btn');
+  if (!btn || btn.dataset.tf === selectedTf) return;
+  selectedTf = btn.dataset.tf;
+  refresh();
+});
+
+$('refresh-btn').addEventListener('click', refresh);
+
+$('change-select').addEventListener('change', (e) => {
+  changeField = e.target.value;
+  // All windows are already stored per row — re-render without refetching.
+  renderSymbols(lastSymbols);
+});
+
+setInterval(tick, 1000);
+refresh();
+</script>
+</body>
+</html>
