@@ -1,7 +1,7 @@
 'use strict';
 
 const logger = require('./logger');
-const { ema, sma, rsi, crossedAbove, lastCrossIndex } = require('./indicators');
+const { ema, sma, rsi, lastCrossIndex } = require('./indicators');
 
 // Change windows shown in the dashboard (minutes → stored column name).
 const CHANGE_WINDOWS = [
@@ -214,10 +214,11 @@ async function runScan(config, deps = {}) {
         let matched = false;
         let crossTs = last.ts;
         let crossPrice = last.close;
+        let crossRsi = null;
 
         if (emaCross) {
           // Check RSI and volume on the CROSS candle, not the last candle.
-          const crossRsi = rsiSeries[crossIdx];
+          crossRsi = rsiSeries[crossIdx];
           const crossVol = closed[crossIdx].volume;
           volumeOk = avgVol !== null && avgVol > 0 && crossVol > avgVol;
           rsiOk = crossRsi !== null && crossRsi >= config.rsiMin && crossRsi <= config.rsiMax;
@@ -249,7 +250,7 @@ async function runScan(config, deps = {}) {
           const prevAlert = dbm.getAlert(instId, tf);
           const crossRef = prevAlert && prevAlert.cross_ts != null ? prevAlert.cross_ts : crossTs;
           const signalPrice = emaCrossPrice(closed, fast, slow, crossRef);
-          await handleMatch(config, dbm, telegram, instId, tf, last.close, rsiCurrent, crossTs, signalPrice, crossPrice);
+          await handleMatch(config, dbm, telegram, instId, tf, last.close, crossRsi, crossTs, signalPrice, crossPrice);
         } else if (dbm.getAlert(instId, tf)) {
           // This timeframe stopped matching → allow a future re-match to alert
           // again for this timeframe only.

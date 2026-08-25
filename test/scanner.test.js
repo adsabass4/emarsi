@@ -563,6 +563,66 @@ test('scanner detects crossover within lookback window but not on last pair', as
   assert.ok(r.last_candle_ts > r.cross_ts, 'cross_ts is earlier than last_candle_ts');
 });
 
+test('Telegram alert shows cross-candle RSI (the one that satisfied rsiMin..rsiMax)', async () => {
+  // Same late-cross data as above: cross at index 114 where RSI is in range,
+  // while the CURRENT (last candle) RSI differs. The alert must show the
+  // cross-candle RSI — the value the match decision was actually based on.
+  const closes = [];
+  for (let i = 0; i < 120; i++) {
+    if (i < 90) closes.push(100 + Math.sin(i * 0.3) * 2);
+    else if (i < 108) closes.push(100 - (i - 90) * 0.15);
+    else if (i >= 108 && i < 116) closes.push(97.3 + (i - 108) * 0.4);
+    else if (i % 3 === 0) closes.push(100.5 + (i - 116) * 0.05);
+    else if (i % 3 === 1) closes.push(100.5 + (i - 116) * 0.05 - 0.5);
+    else closes.push(100.5 + (i - 116) * 0.05 + 0.1);
+  }
+  const vols = closes.map(() => 100);
+  vols[114] = 500;
+
+  const candles = closes.map((c, i) => ({
+    ts: 1000 + i * 3600,
+    open: c, high: c * 1.001, low: c * 0.999, close: c,
+    volume: vols[i], confirm: 1,
+  }));
+
+  // Capture the RSI value passed to formatAlert.
+  const captured = [];
+  const tg = {
+    formatAlert: (instId, price, rsv, tf, crossPrice) => {
+      captured.push({ rsv, tf, crossPrice });
+      return `[${instId}@${tf}]`;
+    },
+    sendMessage: async () => true,
+  };
+
+  const okx = fakeOkx({
+    'LATE-USDT': { '4H': candles, '1H': candles, '5m': shortFixture() },
+  });
+
+  const cfg = baseConfig();
+  const res = await runScan(cfg, { okx, telegram: tg });
+  assert.strictEqual(res.ok, true);
+
+  // Same candles on both timeframes → both may match; assert on the 4H one.
+  const hit = captured.find((c) => c.tf === '4H');
+  assert.ok(hit, '4H alert sent');
+  const { rsv } = hit;
+  assert.ok(rsv != null, 'RSI value passed to formatAlert');
+  assert.ok(rsv >= cfg.rsiMin && rsv <= cfg.rsiMax, `alert RSI (${rsv}) within [${cfg.rsiMin}, ${cfg.rsiMax}] — same condition as the match`);
+
+  // The displayed RSI must be the CROSS candle's RSI, not the current one.
+  const { ema, rsi: rsiFn, lastCrossIndex } = require('../src/indicators');
+  const closedCandles = candles; // all confirm=1
+  const fast = ema(closedCandles.map((c) => c.close), cfg.emaFast);
+  const slow = ema(closedCandles.map((c) => c.close), cfg.emaSlow);
+  const series = rsiFn(closedCandles.map((c) => c.close), cfg.rsiPeriod);
+  const crossIdx = lastCrossIndex(fast, slow, 10);
+  const expectedCrossRsi = series[crossIdx]; // scanner passes the raw series value
+  const currentRsi = series[series.length - 1];
+  assert.strictEqual(rsv, expectedCrossRsi, 'alert shows cross-candle RSI');
+  assert.notStrictEqual(currentRsi, expectedCrossRsi, 'sanity: current RSI differs in this fixture');
+});
+
 test('scanner ignores crossover beyond maxLookback of 10 candles', async () => {
   // Cross happened at candle 100 (20 candles ago, beyond lookback).
   // Scanner should NOT match.
