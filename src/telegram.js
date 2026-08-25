@@ -45,11 +45,13 @@ async function sendMessage(config, text) {
   }
 }
 
-function formatAlert(instId, price, rsiVal, timeframe) {
+function formatAlert(instId, price, rsiVal, timeframe, crossPrice) {
   const rs = Number.isFinite(rsiVal) ? Math.round(rsiVal * 100) / 100 : '-';
   const p = Number.isFinite(price) ? price : '-';
+  const cp = Number.isFinite(crossPrice) ? crossPrice : null;
   const tf = timeframe ? ` (${timeframe})` : '';
-  return `🔔 ${instId} — تقاطع صاعد${tf} | RSI: ${rs} | السعر: ${p}`;
+  const priceLine = cp !== null && cp !== p ? ` | سعر التقاطع: ${cp}` : '';
+  return `🔔 ${instId} — تقاطع صاعد${tf} | RSI: ${rs} | السعر: ${p}${priceLine}`;
 }
 
 module.exports = { sendMessage, formatAlert };

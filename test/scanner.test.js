@@ -470,3 +470,161 @@ test('cross_price is backfilled for alerts created before the column existed', a
   await runScan(cfg, { okx, telegram: telegramFake });
   assert.ok(Math.abs(db.getAlert('X-USDT', '4H').cross_price - 189.2622499) < 1e-6, 'cross_price backfilled from candles');
 });
+
+test('lastCrossIndex finds crossover even when it happened many candles ago', async () => {
+  const { lastCrossIndex } = require('../src/indicators');
+
+  // Simulate: fast crossed above slow at index 50, then stayed above.
+  const n = 120;
+  const fast = new Array(n).fill(null);
+  const slow = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (i < 20) { fast[i] = 90; slow[i] = 100; }       // fast below slow
+    else if (i < 50) { fast[i] = 95; slow[i] = 100; }   // fast still below
+    else if (i === 50) { fast[i] = 101; slow[i] = 100; } // CROSS at index 50
+    else { fast[i] = 105; slow[i] = 100; }               // fast stays above
+  }
+
+  const idx = lastCrossIndex(fast, slow);
+  assert.strictEqual(idx, 50, 'finds crossover at index 50, not the last pair');
+
+  // crossedAbove would return false here (last pair: both above, no new cross)
+  const { crossedAbove } = require('../src/indicators');
+  assert.strictEqual(crossedAbove(fast, slow), false, 'crossedAbove misses old cross');
+});
+
+test('lastCrossIndex returns -1 when no crossover exists', () => {
+  const { lastCrossIndex } = require('../src/indicators');
+
+  // Fast always above slow → no crossover
+  const fast = [90, 91, 92, 93, 94];
+  const slow = [80, 81, 82, 83, 84];
+  assert.strictEqual(lastCrossIndex(fast, slow), -1);
+
+  // Fast always below slow → no crossover
+  assert.strictEqual(lastCrossIndex([80, 81, 82], [90, 91, 92]), -1);
+
+  // Too few elements
+  assert.strictEqual(lastCrossIndex([1], [1]), -1);
+  assert.strictEqual(lastCrossIndex([], []), -1);
+});
+
+test('lastCrossIndex returns the LATEST crossover when multiple exist', () => {
+  const { lastCrossIndex } = require('../src/indicators');
+
+  // Cross at index 2 (up), then back down at 4, then cross again at 6
+  const fast = [80, 85, 95, 90, 85, 88, 95, 96];
+  const slow = [90, 90, 90, 90, 90, 90, 90, 90];
+  // Index 0: fast=80 < slow=90
+  // Index 1: fast=85 < slow=90
+  // Index 2: fast=95 > slow=90, prev=85 <= 90 → CROSS at 2
+  // Index 3: fast=90 == slow=90
+  // Index 4: fast=85 < slow=90
+  // Index 5: fast=88 < slow=90
+  // Index 6: fast=95 > slow=90, prev=88 <= 90 → CROSS at 6
+
+  assert.strictEqual(lastCrossIndex(fast, slow), 6, 'returns the latest cross, not the first');
+});
+
+test('scanner detects crossover within lookback window but not on last pair', async () => {
+  // Build candle data where EMA cross happened at candle ~113 (within 10-candle
+  // lookback but NOT on the last pair). Gentle oscillation keeps RSI in range.
+  const closes = [];
+  for (let i = 0; i < 120; i++) {
+    if (i < 90) closes.push(100 + Math.sin(i * 0.3) * 2);       // sideways ~98-102
+    else if (i < 108) closes.push(100 - (i - 90) * 0.15);       // decline to ~97.3
+    else if (i >= 108 && i < 116) closes.push(97.3 + (i - 108) * 0.4);  // very gentle rise (cross here)
+    else if (i % 3 === 0) closes.push(100.5 + (i - 116) * 0.05);  // oscillation after cross
+    else if (i % 3 === 1) closes.push(100.5 + (i - 116) * 0.05 - 0.5);
+    else closes.push(100.5 + (i - 116) * 0.05 + 0.1);
+  }
+  const vols = closes.map(() => 100);
+  vols[114] = 500; // volume spike on cross candle
+
+  const candles = closes.map((c, i) => ({
+    ts: 1000 + i * 3600,
+    open: c, high: c * 1.001, low: c * 0.999, close: c,
+    volume: vols[i], confirm: 1,
+  }));
+
+  const okx = fakeOkx({
+    'LATE-USDT': { '4H': candles, '1H': candles, '5m': shortFixture() },
+  });
+
+  const cfg = baseConfig();
+  const res = await runScan(cfg, { okx, telegram: telegramFake });
+  assert.strictEqual(res.ok, true);
+
+  const r = rowsByTf('4H')['LATE-USDT'];
+  assert.ok(r, 'row stored for late-cross symbol');
+  assert.strictEqual(r.matched, 1, 'detected the cross within lookback window');
+
+  // cross_ts should point to the actual cross candle, not the last candle
+  assert.ok(r.last_candle_ts > r.cross_ts, 'cross_ts is earlier than last_candle_ts');
+});
+
+test('scanner ignores crossover beyond maxLookback of 10 candles', async () => {
+  // Cross happened at candle 100 (20 candles ago, beyond lookback).
+  // Scanner should NOT match.
+  const closes = [];
+  for (let i = 0; i < 120; i++) {
+    if (i < 80) closes.push(100 + Math.sin(i * 0.3) * 2);
+    else if (i < 100) closes.push(100 - (i - 80) * 0.3);
+    else if (i === 100) closes.push(94 + 7);                     // spike at 100
+    else if (i % 2 === 0) closes.push(102 + (i - 100) * 0.15);  // oscillation
+    else closes.push(102 + (i - 100) * 0.15 - 0.8);
+  }
+  const vols = closes.map(() => 100);
+  vols[119] = 500;
+
+  const candles = closes.map((c, i) => ({
+    ts: 1000 + i * 3600,
+    open: c, high: c * 1.001, low: c * 0.999, close: c,
+    volume: vols[i], confirm: 1,
+  }));
+
+  const okx = fakeOkx({
+    'OLD-USDT': { '4H': candles, '1H': candles, '5m': shortFixture() },
+  });
+
+  const cfg = baseConfig();
+  const res = await runScan(cfg, { okx, telegram: telegramFake });
+  assert.strictEqual(res.ok, true);
+
+  const r = rowsByTf('4H')['OLD-USDT'];
+  assert.ok(r, 'row stored');
+  assert.strictEqual(r.matched, 0, 'cross beyond lookback window is ignored');
+});
+
+test('Telegram message includes crossover price when different from current price', async () => {
+  const sent = [];
+  const tg = {
+    formatAlert: (instId, price, rsv, tf, crossPrice) => {
+      sent.push({ instId, price, rsv, tf, crossPrice });
+      return `[${instId}@${tf}] price=${price} cross=${crossPrice}`;
+    },
+    sendMessage: async () => true,
+  };
+
+  const okx = fakeOkx({
+    'X-USDT': { '4H': matchCandles(), '1H': nonmatchCandles(), '5m': shortFixture() },
+  });
+
+  await runScan(baseConfig(), { okx, telegram: tg });
+  assert.strictEqual(sent.length, 1);
+  // crossPrice should be passed to formatAlert
+  assert.ok(sent[0].crossPrice != null, 'crossPrice is passed to formatAlert');
+});
+
+test('Telegram message omits cross price line when crossPrice equals current price', () => {
+  const { formatAlert } = require('../src/telegram');
+
+  // Same price → no cross price line
+  const msg1 = formatAlert('BTC-USDT', 100, 55, '4H', 100);
+  assert.ok(!msg1.includes('سعر التقاطع'), 'no cross price line when prices match');
+
+  // Different price → cross price line shown
+  const msg2 = formatAlert('BTC-USDT', 105, 55, '4H', 100);
+  assert.ok(msg2.includes('سعر التقاطع: 100'), 'cross price line shown when different');
+  assert.ok(msg2.includes('السعر: 105'), 'current price still shown');
+});

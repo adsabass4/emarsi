@@ -34,11 +34,14 @@ function sma(values, period) {
 }
 
 /**
- * RSI with Wilder's smoothing. Returns null if not enough data.
+ * RSI with Wilder's smoothing.
+ * Returns array of RSI values aligned with input (first `period` entries are null).
  * If average loss is zero the RSI is 100 (all gains).
+ * Last element (index closes.length - 1) equals the traditional single-value RSI.
  */
 function rsi(closes, period = 14) {
   if (!period || period < 1 || closes.length <= period) return null;
+  const out = new Array(closes.length).fill(null);
   let avgGain = 0;
   let avgLoss = 0;
   for (let i = 1; i <= period; i++) {
@@ -48,16 +51,16 @@ function rsi(closes, period = 14) {
   }
   avgGain /= period;
   avgLoss /= period;
+  out[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   for (let i = period + 1; i < closes.length; i++) {
     const d = closes[i] - closes[i - 1];
     const g = d > 0 ? d : 0;
     const l = d < 0 ? -d : 0;
     avgGain = (avgGain * (period - 1) + g) / period;
     avgLoss = (avgLoss * (period - 1) + l) / period;
+    out[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
   }
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
+  return out;
 }
 
 /**
@@ -76,4 +79,42 @@ function crossedAbove(fast, slow) {
   return fast[i] > slow[i] && fast[j] <= slow[j];
 }
 
-module.exports = { ema, sma, rsi, crossedAbove };
+/**
+ * Find the index of the LAST upward crossover in the series.
+ * Scans from newest to oldest: returns the index where fast[i] > slow[i]
+ * and fast[i-1] <= slow[i-1], or -1 if no crossover exists.
+ * Unlike crossedAbove (which only checks the last pair), this finds
+ * crossovers that happened many candles ago.
+ * 
+ * @param fast     fast EMA series
+ * @param slow     slow EMA series
+ * @param maxLookback  max candles to look back (default Infinity = no limit)
+ *                     Only returns a crossover if found within this window
+ *                     from the most recent candle.
+ * @returns index of crossover candle, or -1 if none found within lookback
+ *          or if fast is not currently above slow.
+ */
+function lastCrossIndex(fast, slow, maxLookback = Infinity) {
+  const n = fast.length;
+  if (n < 2 || slow.length !== n) return -1;
+  
+  // ✅ التحقق: الوضع الحالي لازم يكون صاعد (fast > slow على آخر شمعة)
+  const last = n - 1;
+  if (fast[last] === null || slow[last] === null || fast[last] <= slow[last]) {
+    return -1;
+  }
+  
+  // ✅ حد البحث للخلف
+  const start = Math.max(1, n - maxLookback);
+  for (let i = n - 1; i >= start; i--) {
+    if (fast[i] === null || slow[i] === null || fast[i - 1] === null || slow[i - 1] === null) {
+      continue;
+    }
+    if (fast[i] > slow[i] && fast[i - 1] <= slow[i - 1]) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+module.exports = { ema, sma, rsi, crossedAbove, lastCrossIndex };

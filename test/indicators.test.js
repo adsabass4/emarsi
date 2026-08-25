@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { ema, sma, rsi, crossedAbove } = require('../src/indicators');
+const { ema, sma, rsi, crossedAbove, lastCrossIndex } = require('../src/indicators');
 
 test('sma returns the average of the last N values', () => {
   assert.strictEqual(sma([1, 2, 3, 4, 5], 3), 4);
@@ -48,14 +48,29 @@ test('rsi returns null with insufficient data', () => {
   assert.strictEqual(rsi([1, 2, 3], 14), null);
 });
 
+test('rsi series: nulls for first period, then valid values', () => {
+  const closes = Array.from({ length: 30 }, (_, i) => i + 1);
+  const series = rsi(closes, 14);
+  assert.ok(Array.isArray(series), 'returns an array');
+  assert.strictEqual(series.length, 30);
+  // First 14 entries are null (not enough data)
+  for (let i = 0; i < 14; i++) {
+    assert.strictEqual(series[i], null, `series[${i}] should be null`);
+  }
+  // Last entry is the traditional RSI value
+  assert.strictEqual(series[29], 100);
+});
+
 test('rsi is 100 when prices only rise', () => {
   const closes = Array.from({ length: 30 }, (_, i) => i + 1);
-  assert.strictEqual(rsi(closes, 14), 100);
+  const series = rsi(closes, 14);
+  assert.strictEqual(series[29], 100);
 });
 
 test('rsi is 0 when prices only fall', () => {
   const closes = Array.from({ length: 30 }, (_, i) => 30 - i);
-  assert.strictEqual(rsi(closes, 14), 0);
+  const series = rsi(closes, 14);
+  assert.strictEqual(series[29], 0);
 });
 
 test('rsi matches a hand-computed Wilder example (period 2)', () => {
@@ -64,7 +79,24 @@ test('rsi matches a hand-computed Wilder example (period 2)', () => {
   // i=3: d=-1 → avgGain=(1+0)/2=0.5, avgLoss=(0+1)/2=0.5
   // i=4: d=+1 → avgGain=(0.5+1)/2=0.75, avgLoss=(0.5+0)/2=0.25
   // RS=3 → RSI=100-100/4=75
-  assert.strictEqual(rsi([1, 2, 3, 2, 3], 2), 75);
+  const series = rsi([1, 2, 3, 2, 3], 2);
+  assert.strictEqual(series[4], 75);
+  // Earlier values
+  assert.strictEqual(series[0], null);
+  assert.strictEqual(series[1], null);
+  assert.strictEqual(series[2], 100);  // seed: all gains
+  assert.strictEqual(series[3], 50);   // after the drop
+});
+
+test('rsi series has correct length matching input', () => {
+  const closes = [10, 11, 12, 11, 13, 14, 12, 15, 16, 14];
+  const series = rsi(closes, 3);
+  assert.strictEqual(series.length, closes.length);
+  assert.strictEqual(series[0], null);
+  assert.strictEqual(series[1], null);
+  assert.strictEqual(series[2], null);
+  // series[3] onwards are valid
+  assert.ok(typeof series[3] === 'number');
 });
 
 test('crossedAbove detects a real crossover on the last bar only', () => {
@@ -92,4 +124,54 @@ test('crossedAbove handles nulls and mismatched lengths', () => {
   assert.strictEqual(crossedAbove([null, 2, 3], [1, 2, 3]), false);
   assert.strictEqual(crossedAbove([], []), false);
   assert.strictEqual(crossedAbove([1], [1]), false);
+});
+
+// ---------- lastCrossIndex ----------
+
+test('lastCrossIndex finds the latest upward crossover', () => {
+  const fast = [80, 85, 95, 90, 85, 88, 95, 96];
+  const slow = [90, 90, 90, 90, 90, 90, 90, 90];
+  // Cross at index 2 and index 6
+  assert.strictEqual(lastCrossIndex(fast, slow), 6);
+});
+
+test('lastCrossIndex returns -1 when fast is not above slow on last candle', () => {
+  // Cross at index 2, but fast[4] < slow[4]
+  const fast = [80, 85, 95, 88, 85];
+  const slow = [90, 90, 90, 90, 90];
+  assert.strictEqual(lastCrossIndex(fast, slow), -1);
+});
+
+test('lastCrossIndex returns -1 when no crossover exists', () => {
+  assert.strictEqual(lastCrossIndex([90, 91, 92], [80, 81, 82]), -1);
+  assert.strictEqual(lastCrossIndex([80, 81, 82], [90, 91, 92]), -1);
+  assert.strictEqual(lastCrossIndex([1], [1]), -1);
+  assert.strictEqual(lastCrossIndex([], []), -1);
+});
+
+test('lastCrossIndex respects maxLookback limit', () => {
+  // Cross at index 2, fast stays above till end
+  const fast = [80, 85, 95, 96, 97, 98, 99, 100];
+  const slow = [90, 90, 90, 90, 90, 90, 90, 90];
+  // With maxLookback=3, only checks indices 5,6,7 → no cross found
+  assert.strictEqual(lastCrossIndex(fast, slow, 3), -1);
+  // With maxLookback=5, checks indices 3,4,5,6,7 → no cross
+  assert.strictEqual(lastCrossIndex(fast, slow, 5), -1);
+  // With maxLookback=6, checks indices 2,3,4,5,6,7 → cross at 2
+  assert.strictEqual(lastCrossIndex(fast, slow, 6), 2);
+  // No limit → finds cross at 2
+  assert.strictEqual(lastCrossIndex(fast, slow), 2);
+});
+
+test('lastCrossIndex returns -1 when fast <= slow on last candle even with old cross', () => {
+  // Cross at index 2, but fast drops back below at index 4
+  const fast = [80, 85, 95, 92, 88, 85, 84, 83];
+  const slow = [90, 90, 90, 90, 90, 90, 90, 90];
+  assert.strictEqual(lastCrossIndex(fast, slow), -1);
+});
+
+test('lastCrossIndex handles nulls in series', () => {
+  const fast = [null, null, 85, 95, 96, 97];
+  const slow = [null, null, 90, 90, 90, 90];
+  assert.strictEqual(lastCrossIndex(fast, slow), 3);
 });

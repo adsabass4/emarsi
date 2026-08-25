@@ -1,7 +1,7 @@
 'use strict';
 
 const logger = require('./logger');
-const { ema, sma, rsi, crossedAbove } = require('./indicators');
+const { ema, sma, rsi, crossedAbove, lastCrossIndex } = require('./indicators');
 
 // Change windows shown in the dashboard (minutes → stored column name).
 const CHANGE_WINDOWS = [
@@ -193,18 +193,38 @@ async function runScan(config, deps = {}) {
         const closes = closed.map((c) => c.close);
         const fast = ema(closes, config.emaFast);
         const slow = ema(closes, config.emaSlow);
-        const r = rsi(closes, config.rsiPeriod);
+        const rsiSeries = rsi(closes, config.rsiPeriod);
         const volumes = closed.map((c) => c.volume);
         const avgVol = sma(volumes, config.volumeSma);
         const last = closed[closed.length - 1];
         const prev = closed[closed.length - 2];
 
-        const emaCross = crossedAbove(fast, slow);
-        const volumeOk = avgVol !== null && avgVol > 0 && last.volume > avgVol;
-        const rsiOk = r !== null && r >= config.rsiMin && r <= config.rsiMax;
-        const matched = emaCross && volumeOk && rsiOk;
+        // Find crossover with max lookback of 10 candles and verify current state is bullish.
+        const crossIdx = lastCrossIndex(fast, slow, 10);
+        const emaCross = crossIdx >= 0;
+        
+        // Current RSI (for DB storage and dashboard display).
+        const rsiCurrent = rsiSeries ? rsiSeries[closes.length - 1] : null;
+
         const changePct =
           prev && prev.close ? ((last.close - prev.close) / prev.close) * 100 : null;
+
+        let volumeOk = false;
+        let rsiOk = false;
+        let matched = false;
+        let crossTs = last.ts;
+        let crossPrice = last.close;
+
+        if (emaCross) {
+          // Check RSI and volume on the CROSS candle, not the last candle.
+          const crossRsi = rsiSeries[crossIdx];
+          const crossVol = closed[crossIdx].volume;
+          volumeOk = avgVol !== null && avgVol > 0 && crossVol > avgVol;
+          rsiOk = crossRsi !== null && crossRsi >= config.rsiMin && crossRsi <= config.rsiMax;
+          matched = volumeOk && rsiOk;
+          crossTs = closed[crossIdx].ts;
+          crossPrice = closed[crossIdx].close;
+        }
 
         dbm.insertScan({
           symbol: instId,
@@ -212,7 +232,7 @@ async function runScan(config, deps = {}) {
           timestamp: now,
           price: last.close,
           ticker_price: tickers.get(instId)?.last ?? null,
-          rsi: r === null ? null : Math.round(r * 100) / 100,
+          rsi: rsiCurrent === null ? null : Math.round(rsiCurrent * 100) / 100,
           ema_cross: emaCross ? 1 : 0,
           volume_ok: volumeOk ? 1 : 0,
           matched: matched ? 1 : 0,
@@ -225,13 +245,11 @@ async function runScan(config, deps = {}) {
 
         if (matched) {
           stats.matched++;
-          // Cross price for storage: on first detection it is the interpolated
-          // EMA crossover price; for pre-existing alerts with a null
-          // cross_price it backfills from the historical cross candle.
+          // Interpolated cross price for storage.
           const prevAlert = dbm.getAlert(instId, tf);
-          const crossRef = prevAlert && prevAlert.cross_ts != null ? prevAlert.cross_ts : last.ts;
+          const crossRef = prevAlert && prevAlert.cross_ts != null ? prevAlert.cross_ts : crossTs;
           const signalPrice = emaCrossPrice(closed, fast, slow, crossRef);
-          await handleMatch(config, dbm, telegram, instId, tf, last.close, r, last.ts, signalPrice);
+          await handleMatch(config, dbm, telegram, instId, tf, last.close, rsiCurrent, crossTs, signalPrice, crossPrice);
         } else if (dbm.getAlert(instId, tf)) {
           // This timeframe stopped matching → allow a future re-match to alert
           // again for this timeframe only.
@@ -274,9 +292,9 @@ async function runScan(config, deps = {}) {
  *  - `alerts.sent` flags whether the message was delivered: 0 → retried on
  *    the next cycle, 1 → deduped (only last_seen_at refreshed).
  */
-async function handleMatch(config, dbm, telegram, instId, timeframe, price, rsv, crossTs, signalPrice) {
+async function handleMatch(config, dbm, telegram, instId, timeframe, price, rsv, crossTs, signalPrice, crossPrice) {
   const existing = dbm.getAlert(instId, timeframe);
-  const msg = telegram.formatAlert(instId, price, rsv, timeframe);
+  const msg = telegram.formatAlert(instId, price, rsv, timeframe, crossPrice);
 
   if (existing) {
     // Backfill the signal price for alerts created before the column existed
