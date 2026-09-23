@@ -129,6 +129,8 @@ npm test                     # تشغيل الاختبارات (33 اختبار�
 | `REQUESTS_PER_2S` | أقصى طلبات لكل ثانيتين (احترام Rate Limit) | `16` |
 | `REQUEST_TIMEOUT_MS` | مهلة الطلب | `10000` |
 | `RETENTION_DAYS` | مدة حفظ سجل الأدوار ثم الحذف | `30` |
+| `TURSO_DATABASE_URL` | رابط قاعدة بيانات Turso السحابية (`libsql://...` أو `https://...`) | فارغ = ملف محلي `data/scanner.db` |
+| `TURSO_AUTH_TOKEN` | توكن الوصول إلى Turso | فارغ (مطلوب عند ضبط الرابط) |
 | `PORT` | منفذ لوحة التحكم | `3000` |
 | `TZ` | المنطقة الزمنية | `UTC` |
 | `DRY_RUN` | `true` يسجل التنبيهات دون إرسال (تجربة) | `false` |
@@ -140,6 +142,43 @@ npm test                     # تشغيل الاختبارات (33 اختبار�
 - **حارس مدة الدورة** (`CYCLE_TIMEOUT_MINUTES`): إذا علقت دورة تتجاوز الحد، يُسجَّل `ERROR ... forcing release` وتُفرَّج القفل لتبدأ الدورة التالية من جديد بدل رسالة `skipping` المتكررة إلى الأبد.
 - **شبكة أمان العملية**: أي `uncaughtException`/`unhandledRejection` يُسجَّل بالـstack ثم يخرج الرمز `1` فيعيد Docker (`restart: unless-stopped`) أو systemd/pm2 تشغيله — لا موت صامت.
 - **إنذار قدم البيانات**: `/api/health` و`/api/overview` يرجِعان `lastScanAgeMs` و`stale`، واللوحة تعرض بانرًا أحمر «آخر مسح منذ أكثر من N دقيقة» عند التوقف/العلق. للمراقبة السريعة: `docker compose logs --tail=50 scanner` — إن رأيت `still running — skipping` متكررًا أو `forcing release` فهذا يعني دورة معلّقة/عالقة.
+
+### قاعدة البيانات الدائمة (Turso)
+
+> **لماذا؟** على منصات مثل Render تُمسح الملفات عند كل نشر جديد (Ephemeral Filesystem)، فيضيع تاريخ التنبيهات وتصلك رسائل مكررة. Turso قاعدة SQLite سحابية دائمة، والمشروع يستخدم `@libsql/client` التي تعمل معها ومع الملف المحلي بنفس الكود.
+
+**القيم توضع في مكانين:**
+- **محليًا**: في ملف `.env` بجذر المشروع (يُحمَّل تلقائيًا عبر dotenv):
+  ```env
+  TURSO_DATABASE_URL=libsql://emarsi-db-yourname.turso.io
+  TURSO_AUTH_TOKEN=eyJhbGciOi...
+  ```
+- **على Render**: Dashboard → الخدمة → تبويب **Environment** → **Add Variable** لكل من `TURSO_DATABASE_URL` و`TURSO_AUTH_TOKEN` (Render لا يقرأ ملف `.env` — يعيد النشر تلقائيًا بعد الحفظ).
+
+**الحصول على الرابط والتوكن:**
+
+1. أنشئ حساب في [turso.tech](https://turso.tech) (الخطة المجانية كافية) ثم ثبّت الـ CLI:
+   ```bash
+   npm install -g @turso/cli        # أو: brew install tursodatabase/tap/turso
+   turso auth login
+   ```
+2. أنشئ قاعدة البيانات:
+   ```bash
+   turso db create emarsi-scanner
+   ```
+3. احصل على **الرابط** (قيمة `TURSO_DATABASE_URL`):
+   ```bash
+   turso db show emarsi-scanner --url
+   # مثال: libsql://emarsi-db-yourname.turso.io
+   ```
+4. أنشئ **توكن** (قيمة `TURSO_AUTH_TOKEN`):
+   ```bash
+   turso db tokens create emarsi-scanner
+   ```
+   (يمكن تجديده لاحقًا بـ `turso db tokens revoke` ثم `create`.)
+5. ضع القيمتين في `.env` محليًا وفي Environment على Render، ثم أعد التشغيل.
+
+**سلوك افتراضي آمن:** إذا تركت المتغيرين **فارغين** يعمل المشروع كالسابق على ملف محلي `data/scanner.db` — أي أن الاختبارات والتطوير المحلي تعمل بدون حساب Turso إطلاقًا.
 
 ---
 
@@ -212,11 +251,11 @@ sudo nginx -s reload
 | `GET /api/symbols?timeframe=4H&matched=true` | صفوف آخر دورة (افتراضي `TIMEFRAME`؛ اختياري: الفلترة) |
 | `GET /api/health` | فحص الصحة (يستخدمه Docker Healthcheck) |
 
-### بنية الجدول في SQLite (`data/scanner.db`)
+### بنية الجدول (Turso عند ضبط `TURSO_DATABASE_URL`، أو محليًا `data/scanner.db`)
 
 ```sql
 scans(id, symbol, timeframe, timestamp, price, ticker_price, rsi, ema_cross, volume_ok, matched,
-      change_pct, change_5m, change_15m, change_1h, change_4h, last_candle_ts)
+      change_pct, change_5m, change_15m, change_1h, change_4h, last_candle_ts, higher_tf_warning)
       -- last_candle_ts = timestamp شمعة التقاطع نفسها (يعتمد عليها عمود "الشموع منذ الاكتشاف")
 alerts(symbol, timeframe, detected_at, last_seen_at, sent, cross_ts, cross_price)
       -- حالة منع تكرار التنبيه (لكل عملة+فريم)
@@ -226,9 +265,13 @@ alerts(symbol, timeframe, detected_at, last_seen_at, sent, cross_ts, cross_price
 state(key, value)                                     -- أدوار ومعدّات التشغيل
 ```
 
-للاطلاع على البيانات يدويًا (خلال Docker `data` volume):
+للاطلاع على البيانات يدويًا:
 ```bash
-docker compose exec scanner node -e "const{DatabaseSync}=require('node:sqlite');const d=new DatabaseSync('/app/data/scanner.db');console.log(d.prepare('select * from scans where matched=1 order by timestamp desc').all())"
+# Turso (عن بعد):
+turso db shell emarsi-scanner "select * from scans where matched=1 order by timestamp desc"
+
+# محليًا (خلال Docker `data` volume):
+docker compose exec scanner node -e "const{createClient}=require('@libsql/client');createClient({url:'file:/app/data/scanner.db'}).execute('select * from scans where matched=1 order by timestamp desc').then(r=>console.log(r.rows))"
 ```
 
 ### الملفات
@@ -239,7 +282,7 @@ src/config.js          كل الإعدادات من البيئة (مع defaults)
 src/okx.js             عميل OKX + طابور Rate Limit
 src/indicators.js      EMA / RSI / SMA / تقاطع
 src/scanner.js         دورة المسح + منطق الإشارة + ديدِب التنبيه
-src/db.js              SQLite (node:sqlite)
+src/db.js              SQLite عبر @libsql/client (Turso سحابي أو ملف محلي)
 src/scheduler.js       node-cron
 src/telegram.js        إرسال رسائل
 src/logger.js          سجل ملفي logs/app.log (روتشين 5MB) + stdout

@@ -1,6 +1,6 @@
 # Build for both linux/amd64 and linux/arm64 (Oracle Ampere, Raspberry Pi).
-# Uses Node 24 (LTS) which ships a stable built-in `node:sqlite` module,
-# so no native compilation step is required on any architecture.
+# Uses Node 24 (LTS) and @libsql/client for SQLite (local file or Turso cloud),
+# with prebuilt binaries for both architectures — no compilation step needed.
 FROM node:24-slim
 
 WORKDIR /app

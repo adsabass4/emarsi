@@ -11,17 +11,19 @@ const db = require('../src/db');
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sched-test-'));
 const baseCfg = { scanIntervalMinutes: 15, scanCron: '', cycleTimeoutMinutes: 0, staleFactor: 1.5 };
+// Fresh db file per test — never rmSync while the previous libsql handle may
+// still hold the file (Windows releases it asynchronously → EBUSY otherwise).
+let dbSeq = 0;
 
-function initDb() {
+async function initDb() {
   db.close();
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-  fs.mkdirSync(tmpDir, { recursive: true });
-  process.env.DB_PATH = path.join(tmpDir, 'sched.db');
-  db.init();
+  dbSeq += 1;
+  process.env.DB_PATH = path.join(tmpDir, `sched-${dbSeq}.db`);
+  await db.init();
 }
 
 test('runCycle releases the latch when scanFn throws → next cycle starts', async () => {
-  initDb();
+  await initDb();
   let calls = 0;
   const scanFn = async () => {
     calls++;
@@ -38,7 +40,7 @@ test('runCycle releases the latch when scanFn throws → next cycle starts', asy
 });
 
 test('runCycle releases the latch when scanFn rejects (async error)', async () => {
-  initDb();
+  await initDb();
   let calls = 0;
   const scanFn = async () => {
     calls++;
@@ -51,7 +53,7 @@ test('runCycle releases the latch when scanFn rejects (async error)', async () =
 });
 
 test('runCycle skips while a cycle is in flight, then runs once it completes', async () => {
-  initDb();
+  await initDb();
   let release;
   const gate = new Promise((r) => { release = r; });
   const scanFn = async () => { await gate; };
@@ -68,7 +70,7 @@ test('runCycle skips while a cycle is in flight, then runs once it completes', a
 });
 
 test('watchdog force-releases a stuck cycle so the next tick starts fresh', async () => {
-  initDb();
+  await initDb();
   const cfgFast = { ...baseCfg, cycleTimeoutMinutes: 1 / 600 }; // 100ms limit
   let stuck = true;
   const stuckFn = async () => { while (stuck) await new Promise((r) => setTimeout(r, 10)); };

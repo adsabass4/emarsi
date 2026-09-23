@@ -110,7 +110,7 @@ async function runCycle(config, scanFn) {
       busySkips = 0;
     }
     try {
-      db.setState('next_scan_ms', String(next));
+      await db.setState('next_scan_ms', String(next));
     } catch (err2) {
       logger.error(`Failed to persist next_scan_ms: ${err2.message}`);
     }
@@ -128,7 +128,9 @@ async function runCycle(config, scanFn) {
 function schedule(config, scanFn) {
   const expr = config.scanCron || `*/${config.scanIntervalMinutes} * * * *`;
 
-  db.setState('next_scan_ms', String(nextScanMs(config)));
+  db.setState('next_scan_ms', String(nextScanMs(config))).catch((err) => {
+    logger.error(`Failed to persist next_scan_ms: ${err.message}`);
+  });
 
   task = cron.schedule(expr, () => {
     // Deliberately not awaited: runCycle owns all error handling + the latch.
@@ -136,7 +138,7 @@ function schedule(config, scanFn) {
   });
 
   logger.info(`Scan scheduler started: cron "${expr}"`);
-  return { task, nextMs: () => Number(db.getState('next_scan_ms')) || null };
+  return { task, nextMs: async () => Number(await db.getState('next_scan_ms')) || null };
 }
 
 function isBusy() {

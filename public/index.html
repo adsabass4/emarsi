@@ -106,6 +106,7 @@
   .pill { padding: 2px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border); }
   .pill.on { color: var(--green); border-color: var(--green); }
   .pill.off { color: var(--muted); }
+  .pill.warn { color: #f59e0b; border-color: #f59e0b; cursor: help; }
 
   #error { background: rgba(239,68,68,.08); border: 1px solid var(--red); color: #fca5a5;
     border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; font-size: 13px; }
@@ -208,6 +209,7 @@
           <th>الشموع منذ الاكتشاف</th>
           <th>وقت الاكتشاف</th>
           <th>الحجم</th>
+          <th>سياق يومي</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -232,7 +234,7 @@ let lastSymbols = [];
 let selectedTf = null; // set from server config on first load
 
 function tfLabel(tf) {
-  const m = /^(\d+)([mhhdwW])$/.exec(tf || '');
+  const m = /^(\d+)([mHhDdWw])$/.exec(tf || '');
   if (!m) return tf || '—';
   const n = Number(m[1]);
   const u = m[2].toLowerCase();
@@ -345,7 +347,7 @@ function clockTime(ts) {
 
 /** Candle duration of an OKX bar in milliseconds ("1H" → 3_600_000, "4H" → 14_400_000). */
 function tfBarMs(tf) {
-  const m = /^(\d+)([mhhdwW])$/.exec(tf || '');
+  const m = /^(\d+)([mHhDdWw])$/.exec(tf || '');
   if (!m) return null;
   const n = Number(m[1]);
   const u = m[2].toLowerCase();
@@ -417,6 +419,9 @@ function renderSymbols(symbols) {
     if (r.matched === 1) tr.className = 'matched';
     const cross = r.ema_cross === 1 ? '<span class="pill on">تقاطع صاعد ▲</span>' : '<span class="pill off">—</span>';
     const vol = r.volume_ok === 1 ? '<span class="pill on">فوق المتوسط</span>' : '<span class="pill off">—</span>';
+    const warn = r.higher_tf_warning
+      ? `<span class="pill warn" title="${r.higher_tf_warning.replace(/"/g, '&quot;').replace(/</g, '&lt;')}">⚠️</span>`
+      : '<span class="pill off">—</span>';
     tr.innerHTML = `
       <td><span class="sym">${r.symbol.replace('-USDT', '')}</span><span class="muted">/USDT</span></td>
       <td><span class="num">${fmtPrice(r.price)}</span><span class="muted" style="display:block;font-size:11px;">آخر مسح ${relTime(r.scan_at)}</span></td>
@@ -428,6 +433,7 @@ function renderSymbols(symbols) {
       <td>${candlesSince(r)}</td>
       <td>${clockTime(r.detected_at)}</td>
       <td>${vol}</td>
+      <td>${warn}</td>
     `;
     tb.appendChild(tr);
   });

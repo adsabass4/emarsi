@@ -1,7 +1,7 @@
 'use strict';
 
 const logger = require('./logger');
-const { ema, sma, rsi, lastCrossIndex } = require('./indicators');
+const { ema, rsi, crossedAbove, smaBefore } = require('./indicators');
 
 // Change windows shown in the dashboard (minutes → stored column name).
 const CHANGE_WINDOWS = [
@@ -108,15 +108,15 @@ async function runScan(config, deps = {}) {
   const telegram = deps.telegram || require('./telegram');
 
   const now = Date.now();
-  dbm.setState('status', 'running');
-  dbm.setState('last_scan_start_ms', String(now));
+  await dbm.setState('status', 'running');
+  await dbm.setState('last_scan_start_ms', String(now));
 
   const stats = { instruments: 0, filtered: 0, candlesOk: 0, errors: 0, matched: 0, notEnough: 0 };
 
   const retentionDays = config.retentionDays || 0;
   if (retentionDays > 0) {
     try {
-      dbm.pruneScans(now - retentionDays * 24 * 3600 * 1000);
+      await dbm.pruneScans(now - retentionDays * 24 * 3600 * 1000);
     } catch (err) {
       logger.warn(`Scans pruning failed: ${err.message}`);
     }
@@ -146,8 +146,8 @@ async function runScan(config, deps = {}) {
       logger.warn(`Tickers fetch failed (${err.message}) — liquidity filter skipped this cycle`);
     }
 
-    dbm.setState('last_cycle_total', String(stats.instruments));
-    dbm.setState('last_cycle_after_filter', String(filtered.length));
+    await dbm.setState('last_cycle_total', String(stats.instruments));
+    await dbm.setState('last_cycle_after_filter', String(filtered.length));
     logger.info(`Scan cycle started: ${filtered.length}/${instruments.length} USDT pairs`);
 
     // Change-window series (a short timeframe like 5m is enough to cover all
@@ -195,13 +195,15 @@ async function runScan(config, deps = {}) {
         const slow = ema(closes, config.emaSlow);
         const rsiSeries = rsi(closes, config.rsiPeriod);
         const volumes = closed.map((c) => c.volume);
-        const avgVol = sma(volumes, config.volumeSma);
         const last = closed[closed.length - 1];
         const prev = closed[closed.length - 2];
 
-        // Find crossover with max lookback of 10 candles and verify current state is bullish.
-        const crossIdx = lastCrossIndex(fast, slow, 10);
-        const emaCross = crossIdx >= 0;
+        // The signal fires ONLY when the crossover happened on the LAST closed
+        // candle: EMA fast > slow now AND fast <= slow on the previous candle.
+        // No lookback — a cross that happened 2, 5, or 10 candles ago is NOT
+        // a new signal.
+        const emaCross = crossedAbove(fast, slow);
+        const crossIdx = emaCross ? closes.length - 1 : -1;
         
         // Current RSI (for DB storage and dashboard display).
         const rsiCurrent = rsiSeries ? rsiSeries[closes.length - 1] : null;
@@ -217,17 +219,55 @@ async function runScan(config, deps = {}) {
         let crossRsi = null;
 
         if (emaCross) {
-          // Check RSI and volume on the CROSS candle, not the last candle.
+          // Check RSI and volume on the CROSS candle (== last closed candle).
           crossRsi = rsiSeries[crossIdx];
           const crossVol = closed[crossIdx].volume;
-          volumeOk = avgVol !== null && avgVol > 0 && crossVol > avgVol;
+          // Reference average = mean of the `volumeSma` volumes STRICTLY
+          // BEFORE the signal candle (t-20 .. t-1). The signal candle's own
+          // volume and any later data are excluded — no look-ahead bias.
+          const refVol = smaBefore(volumes, config.volumeSma, crossIdx);
+          volumeOk = refVol !== null && refVol > 0 && crossVol > refVol;
           rsiOk = crossRsi !== null && crossRsi >= config.rsiMin && crossRsi <= config.rsiMax;
           matched = volumeOk && rsiOk;
           crossTs = closed[crossIdx].ts;
           crossPrice = closed[crossIdx].close;
         }
 
-        dbm.insertScan({
+        // --- Higher Timeframe Context: fetch 1D data ONLY for matched symbols ---
+        let higherTfWarning = null;
+        if (matched) {
+          stats.matched++;
+          try {
+            const dailyCandles = await okx.getCandles(instId, '1D', 60);
+            const dailyClosed = dailyCandles.filter((c) => c && c.confirm === 1);
+            if (dailyClosed.length >= 35) {
+              const dailyCloses = dailyClosed.map((c) => c.close);
+              const dailyRsiSeries = rsi(dailyCloses, 14);
+              const dailyEma21 = ema(dailyCloses, 21);
+              const lastDailyClose = dailyCloses[dailyCloses.length - 1];
+              const lastDailyRsi = dailyRsiSeries ? dailyRsiSeries[dailyRsiSeries.length - 1] : null;
+              const lastDailyEma21 = dailyEma21 ? dailyEma21[dailyEma21.length - 1] : null;
+
+              const warnings = [];
+              if (lastDailyRsi != null && lastDailyRsi >= 70) {
+                warnings.push(`تشبع شرائي يومي (RSI: ${Math.round(lastDailyRsi)})`);
+              }
+              if (lastDailyEma21 != null && lastDailyEma21 > 0) {
+                const distancePct = ((lastDailyClose - lastDailyEma21) / lastDailyEma21) * 100;
+                if (distancePct > 25) {
+                  warnings.push(`امتداد +${Math.round(distancePct)}% عن المتوسط اليومي`);
+                }
+              }
+              if (warnings.length > 0) {
+                higherTfWarning = warnings.join(' + ');
+              }
+            }
+          } catch (err) {
+            // Daily fetch failure is non-critical — skip warning silently.
+          }
+        }
+
+        await dbm.insertScan({
           symbol: instId,
           timeframe: tf,
           timestamp: now,
@@ -240,33 +280,40 @@ async function runScan(config, deps = {}) {
           change_pct: changePct === null ? null : Math.round(changePct * 10000) / 100,
           last_candle_ts: last.ts,
           ...changes,
+          higher_tf_warning: higherTfWarning,
         });
 
         stats.candlesOk++;
 
         if (matched) {
-          stats.matched++;
           // Interpolated cross price for storage.
-          const prevAlert = dbm.getAlert(instId, tf);
+          const prevAlert = await dbm.getAlert(instId, tf);
           const crossRef = prevAlert && prevAlert.cross_ts != null ? prevAlert.cross_ts : crossTs;
           const signalPrice = emaCrossPrice(closed, fast, slow, crossRef);
-          await handleMatch(config, dbm, telegram, instId, tf, last.close, crossRsi, crossTs, signalPrice, crossPrice);
-        } else if (dbm.getAlert(instId, tf)) {
+          await handleMatch(config, dbm, telegram, instId, tf, last.close, crossRsi, crossTs, signalPrice, crossPrice, higherTfWarning);
+        } else if (await dbm.getAlert(instId, tf)) {
           // This timeframe stopped matching → allow a future re-match to alert
           // again for this timeframe only.
-          dbm.deleteAlert(instId, tf);
+          await dbm.deleteAlert(instId, tf);
           logger.info(`Alert cleared for ${instId}@${tf} (no longer matching)`);
         }
       }
     }
 
-    dbm.setState('status', 'idle');
-    dbm.setState('last_scan_ms', String(now));
-    dbm.setState('last_scan_start_ms', '');
-    dbm.setState('last_scan_count', String(stats.candlesOk));
-    dbm.setState('last_scan_matched', String(stats.matched));
-    dbm.setState('last_scan_duration_ms', String(Date.now() - now));
-    dbm.setState('last_error', '');
+    // Cleanup: delete alerts for (symbol, tf) that are no longer matching.
+    // Catches cases skipped by inline delete (candle fetch errors, etc.).
+    const staleCount = await dbm.deleteStaleAlerts();
+    if (staleCount > 0) {
+      logger.info(`Cleaned ${staleCount} stale alert(s)`);
+    }
+
+    await dbm.setState('status', 'idle');
+    await dbm.setState('last_scan_ms', String(now));
+    await dbm.setState('last_scan_start_ms', '');
+    await dbm.setState('last_scan_count', String(stats.candlesOk));
+    await dbm.setState('last_scan_matched', String(stats.matched));
+    await dbm.setState('last_scan_duration_ms', String(Date.now() - now));
+    await dbm.setState('last_error', '');
 
     logger.info(
       `Scan done in ${Date.now() - now}ms | symbols=${stats.candlesOk} errors=${stats.errors} ` +
@@ -274,9 +321,13 @@ async function runScan(config, deps = {}) {
     );
     return { ok: true, stats };
   } catch (err) {
-    dbm.setState('status', 'error');
-    dbm.setState('last_error', err.message);
-    dbm.setState('last_scan_start_ms', '');
+    try {
+      await dbm.setState('status', 'error');
+      await dbm.setState('last_error', err.message);
+      await dbm.setState('last_scan_start_ms', '');
+    } catch (_) {
+      // Best effort — never mask the original scan error.
+    }
     logger.error(`Scan cycle failed: ${err.message}`);
     return { ok: false, error: err.message, stats };
   }
@@ -293,29 +344,29 @@ async function runScan(config, deps = {}) {
  *  - `alerts.sent` flags whether the message was delivered: 0 → retried on
  *    the next cycle, 1 → deduped (only last_seen_at refreshed).
  */
-async function handleMatch(config, dbm, telegram, instId, timeframe, price, rsv, crossTs, signalPrice, crossPrice) {
-  const existing = dbm.getAlert(instId, timeframe);
-  const msg = telegram.formatAlert(instId, price, rsv, timeframe, crossPrice);
+async function handleMatch(config, dbm, telegram, instId, timeframe, price, rsv, crossTs, signalPrice, crossPrice, higherTfWarning) {
+  const existing = await dbm.getAlert(instId, timeframe);
+  const msg = telegram.formatAlert(instId, price, rsv, timeframe, crossPrice, higherTfWarning);
 
   if (existing) {
     // Backfill the signal price for alerts created before the column existed
     // (kept null-checked so it never overwrites a stored value).
     if (existing.cross_price == null && signalPrice != null) {
-      dbm.backfillCrossPrice(instId, timeframe, signalPrice);
+      await dbm.backfillCrossPrice(instId, timeframe, signalPrice);
     }
     if (existing.sent) {
-      dbm.insertAlert(instId, timeframe, existing.detected_at, Date.now(), 1, existing.cross_ts, existing.cross_price);
+      await dbm.insertAlert(instId, timeframe, existing.detected_at, Date.now(), 1, existing.cross_ts, existing.cross_price);
       return { newAlert: false };
     }
     // Detection already recorded but the message was never delivered → retry.
     if (config.dryRun) {
       logger.info(`[DRY-RUN] would send Telegram alert: ${msg}`);
-      dbm.markSent(instId, timeframe, Date.now());
+      await dbm.markSent(instId, timeframe, Date.now());
       return { newAlert: true, dryRun: true };
     }
     const sent = await telegram.sendMessage(config, msg);
     if (!sent) return { newAlert: false, sent: false };
-    dbm.markSent(instId, timeframe, Date.now());
+    await dbm.markSent(instId, timeframe, Date.now());
     return { newAlert: true, sent: true };
   }
 
@@ -325,13 +376,13 @@ async function handleMatch(config, dbm, telegram, instId, timeframe, price, rsv,
   // since the signal while it stays matching.
   if (config.dryRun) {
     logger.info(`[DRY-RUN] would send Telegram alert: ${msg}`);
-    dbm.insertAlert(instId, timeframe, Date.now(), Date.now(), 1, crossTs, signalPrice);
+    await dbm.insertAlert(instId, timeframe, Date.now(), Date.now(), 1, crossTs, signalPrice);
     return { newAlert: true, dryRun: true };
   }
 
-  dbm.insertAlert(instId, timeframe, Date.now(), Date.now(), 0, crossTs, signalPrice);
+  await dbm.insertAlert(instId, timeframe, Date.now(), Date.now(), 0, crossTs, signalPrice);
   const sent = await telegram.sendMessage(config, msg);
-  if (sent) dbm.markSent(instId, timeframe, Date.now());
+  if (sent) await dbm.markSent(instId, timeframe, Date.now());
   return { newAlert: true, sent };
 }
 

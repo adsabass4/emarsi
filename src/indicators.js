@@ -34,6 +34,21 @@ function sma(values, period) {
 }
 
 /**
+ * Average of the `period` values STRICTLY BEFORE index `idx`
+ * (values[idx-period .. idx-1]). The value at `idx` itself and anything
+ * after it are never included — so a signal evaluated at `idx` can never
+ * see its own volume or any future data.
+ * Returns null when there aren't `period` values before `idx`.
+ */
+function smaBefore(values, period, idx) {
+  if (!period || period < 1 || !Number.isInteger(idx)) return null;
+  if (idx < period) return null;
+  let sum = 0;
+  for (let i = idx - period; i < idx; i++) sum += values[i];
+  return sum / period;
+}
+
+/**
  * RSI with Wilder's smoothing.
  * Returns array of RSI values aligned with input (first `period` entries are null).
  * If average loss is zero the RSI is 100 (all gains).
@@ -117,4 +132,4 @@ function lastCrossIndex(fast, slow, maxLookback = Infinity) {
   return -1;
 }
 
-module.exports = { ema, sma, rsi, crossedAbove, lastCrossIndex };
+module.exports = { ema, sma, smaBefore, rsi, crossedAbove, lastCrossIndex };
