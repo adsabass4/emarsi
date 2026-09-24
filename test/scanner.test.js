@@ -424,6 +424,12 @@ test('last_candle_ts stores the timestamp of the match candle itself', async () 
   assert.ok(r.scan_at > 0, 'scan_at exposed so the dashboard can show scan age');
   assert.strictEqual(r.cross_ts, 108100, 'cross_ts = the detection candle, exposed to the dashboard');
   assert.ok(Math.abs(r.cross_price - 189.2622499) < 1e-6, 'cross_price = interpolated EMA cross price, exposed to the dashboard');
+
+  // The same cross price must be stored on the SCANS row too, so the history
+  // tab keeps the real signal price after the alert is deleted.
+  const hist = await db.signalHistory({ sinceMs: 0, timeframe: null, limit: 10 });
+  assert.strictEqual(hist.length, 1, 'one historical episode for the matched row');
+  assert.ok(Math.abs(hist[0].cross_price - 189.2622499) < 1e-6, 'cross_price stored on scans for history');
 });
 
 test('detection time is recorded even when Telegram delivery fails, then retried', async () => {

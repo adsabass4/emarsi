@@ -267,6 +267,18 @@ async function runScan(config, deps = {}) {
           }
         }
 
+        // Interpolated EMA cross price — computed BEFORE insertScan so the
+        // scans row keeps it for the dashboard's history tab (survives alert
+        // deletion), then reused below for the alert itself. For a continuing
+        // signal the reference is the ORIGINAL cross candle (prevAlert.cross_ts),
+        // so the value matches alerts.cross_price exactly.
+        let signalPrice = null;
+        if (matched) {
+          const prevAlert = await dbm.getAlert(instId, tf);
+          const crossRef = prevAlert && prevAlert.cross_ts != null ? prevAlert.cross_ts : crossTs;
+          signalPrice = emaCrossPrice(closed, fast, slow, crossRef);
+        }
+
         await dbm.insertScan({
           symbol: instId,
           timeframe: tf,
@@ -281,15 +293,12 @@ async function runScan(config, deps = {}) {
           last_candle_ts: last.ts,
           ...changes,
           higher_tf_warning: higherTfWarning,
+          cross_price: signalPrice,
         });
 
         stats.candlesOk++;
 
         if (matched) {
-          // Interpolated cross price for storage.
-          const prevAlert = await dbm.getAlert(instId, tf);
-          const crossRef = prevAlert && prevAlert.cross_ts != null ? prevAlert.cross_ts : crossTs;
-          const signalPrice = emaCrossPrice(closed, fast, slow, crossRef);
           await handleMatch(config, dbm, telegram, instId, tf, last.close, crossRsi, crossTs, signalPrice, crossPrice, higherTfWarning);
         } else if (await dbm.getAlert(instId, tf)) {
           // This timeframe stopped matching → allow a future re-match to alert

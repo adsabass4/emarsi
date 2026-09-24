@@ -36,12 +36,14 @@ function resolveUrl() {
 
 /**
  * Scans table keeps one row per (symbol, timeframe) per scan cycle:
- *   scans(id, symbol, timeframe, timestamp, price, rsi, ema_cross,
+ *   scans(id, symbol, timeframe, timestamp, price, ticker_price, rsi, ema_cross,
  *         volume_ok, matched, change_pct, last_candle_ts, change_5m,
- *         change_15m, change_1h, change_4h)
+ *         change_15m, change_1h, change_4h, higher_tf_warning, cross_price)
  * `last_candle_ts` is the timestamp of the last closed candle used for the
  * indicators — when `matched` it is the candle where the signal was found, so
- * the dashboard can count candles since detection.
+ * the dashboard can count candles since detection. `cross_price` (matched rows
+ * only) is the interpolated EMA cross price stored at detection so the history
+ * tab keeps the real signal price even after the alert row is deleted.
  *
  * alerts table stores which (symbol, timeframe) pairs are currently
  * "detected" so we never send a duplicate Telegram message while the signal
@@ -134,6 +136,7 @@ async function init() {
       ['last_candle_ts', 'REAL'],
       ['ticker_price', 'REAL'],
       ['higher_tf_warning', 'TEXT'],
+      ['cross_price', 'REAL'],
     ];
     for (const [name, type] of add) {
       if (!cols.has(name)) {
@@ -226,8 +229,9 @@ async function insertScan(row) {
   const c = await conn();
   await c.execute(
     `INSERT INTO scans (symbol, timeframe, timestamp, price, ticker_price, rsi, ema_cross, volume_ok, matched,
-                       change_pct, last_candle_ts, change_5m, change_15m, change_1h, change_4h, higher_tf_warning)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                       change_pct, last_candle_ts, change_5m, change_15m, change_1h, change_4h, higher_tf_warning,
+                       cross_price)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       row.symbol,
       row.timeframe,
@@ -245,6 +249,7 @@ async function insertScan(row) {
       row.change_1h == null ? null : row.change_1h,
       row.change_4h == null ? null : row.change_4h,
       row.higher_tf_warning == null ? null : row.higher_tf_warning,
+      row.cross_price == null ? null : row.cross_price,
     ]
   );
 }
@@ -299,6 +304,80 @@ async function pruneScans(olderThanMs) {
   const c = await conn();
   const rs = await c.execute('DELETE FROM scans WHERE timestamp < ?', [olderThanMs]);
   return rs.rowsAffected;
+}
+
+/**
+ * Signal history for the dashboard's "سجل الإشارات" tab, built from `scans`
+ * (alerts are deleted when a signal ends — scans keep the past).
+ *
+ * Groups CONSECUTIVE matched cycles of the same (symbol, timeframe) into one
+ * signal "episode": a new episode starts when the previous row for that pair
+ * is matched=0 (or the series begins) — exactly the rule that ends an alert,
+ * so the history mirrors what was actually alerted. Missing cycles (fetch
+ * errors / filtered pairs) write no row and therefore do NOT split an episode,
+ * same as deleteStaleAlerts behaviour.
+ *
+ * Each episode reports its FIRST cycle's values (detection time, signal
+ * price, cross-candle RSI, daily-context warning) plus the live price from
+ * the symbol's LATEST scan row for retrospective % calculation.
+ *
+ * @param sinceMs    only episodes detected at/after this timestamp (7-day window)
+ * @param timeframe  array of timeframe tokens to keep, or [] / null for all
+ * @param limit      max episodes returned, newest first (cap enforced by caller)
+ */
+async function signalHistory({ sinceMs, timeframe, limit }) {
+  const c = await conn();
+  const tfList = Array.isArray(timeframe) ? timeframe.filter((t) => typeof t === 'string' && t) : [];
+  const params = [sinceMs == null ? 0 : sinceMs];
+  let tfClause = '';
+  if (tfList.length > 0) {
+    tfClause = ` AND timeframe IN (${tfList.map(() => '?').join(', ')})`;
+    params.push(...tfList);
+  }
+  const lim = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 300;
+  params.push(lim);
+
+  const rs = await c.execute(
+    `WITH win AS (
+       SELECT symbol, timeframe, timestamp, matched, price, rsi, last_candle_ts,
+              higher_tf_warning, cross_price,
+              LAG(matched) OVER (PARTITION BY symbol, timeframe ORDER BY timestamp) AS prev_matched
+       FROM scans
+       WHERE timestamp >= ?${tfClause}
+     ),
+     episodes AS (
+       SELECT symbol, timeframe, timestamp, price, rsi, last_candle_ts,
+              higher_tf_warning, cross_price,
+              SUM(CASE WHEN prev_matched IS NULL OR prev_matched = 0 THEN 1 ELSE 0 END)
+                OVER (PARTITION BY symbol, timeframe ORDER BY timestamp) AS ep
+       FROM win
+       WHERE matched = 1
+     ),
+     final AS (
+       SELECT symbol, timeframe, ep, MIN(timestamp) AS detected_at, COUNT(*) AS cycles
+       FROM episodes
+       GROUP BY symbol, timeframe, ep
+     ),
+     latest AS (
+       SELECT s.symbol, MAX(s.ticker_price) AS live_ticker_price, MAX(s.price) AS live_price
+       FROM scans s
+       INNER JOIN (SELECT symbol, MAX(timestamp) AS mt FROM scans GROUP BY symbol) m
+         ON m.symbol = s.symbol AND m.mt = s.timestamp
+       GROUP BY s.symbol
+     )
+     SELECT f.symbol, f.timeframe, f.detected_at, f.cycles,
+            e.last_candle_ts, e.price, e.cross_price, e.rsi, e.higher_tf_warning,
+            l.live_ticker_price, l.live_price
+     FROM final f
+     JOIN episodes e
+       ON e.symbol = f.symbol AND e.timeframe = f.timeframe
+      AND e.ep = f.ep AND e.timestamp = f.detected_at
+     LEFT JOIN latest l ON l.symbol = f.symbol
+     ORDER BY f.detected_at DESC
+     LIMIT ?`,
+    params
+  );
+  return rs.rows;
 }
 
 // ---------- alerts (dedup state, keyed by symbol + timeframe) ----------
@@ -401,6 +480,7 @@ module.exports = {
   countMatched,
   countSymbolsInLastCycle,
   pruneScans,
+  signalHistory,
   getAlert,
   insertAlert,
   markSent,

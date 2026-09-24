@@ -184,38 +184,61 @@
     <div class="tabs">
       <button class="tab active" data-view="matched">المطابقة الآن</button>
       <button class="tab" data-view="all">كل العملات</button>
+      <button class="tab" data-view="history">سجل الإشارات (آخر 7 أيام)</button>
       <button class="btn" id="refresh-btn">تحديث الآن</button>
     </div>
   </div>
-  <div style="overflow-x:auto;">
-    <table>
-      <thead>
-        <tr>
-          <th>الرمز</th>
-          <th>السعر</th>
-          <th>السعر الحالي</th>
-          <th title="سعر إغلاق شمعة الإشارة أول ما اكتشفت، والنسبة مقابل السعر الحالي">سعر الإشارة</th>
-          <th>
-            <span>نسبة التغير</span>
-            <select id="change-select" class="change-select" title="فترة حساب نسبة التغير — يُرتَّب العمود تنازليًا تلقائيًا">
-              <option value="change_4h" selected>4س</option>
-              <option value="change_1h">1س</option>
-              <option value="change_15m">15م</option>
-              <option value="change_5m">5م</option>
-            </select>
-          </th>
-          <th>RSI</th>
-          <th>تقاطع EMA</th>
-          <th>الشموع منذ الاكتشاف</th>
-          <th>وقت الاكتشاف</th>
-          <th>الحجم</th>
-          <th>سياق يومي</th>
-        </tr>
-      </thead>
-      <tbody id="rows"></tbody>
-    </table>
+  <div class="tabs hidden" id="history-tf" style="padding-top:8px;"></div>
+  <div id="table-current">
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>الرمز</th>
+            <th>السعر</th>
+            <th>السعر الحالي</th>
+            <th title="سعر إغلاق شمعة الإشارة أول ما اكتشفت، والنسبة مقابل السعر الحالي">سعر الإشارة</th>
+            <th>
+              <span>نسبة التغير</span>
+              <select id="change-select" class="change-select" title="فترة حساب نسبة التغير — يُرتَّب العمود تنازليًا تلقائيًا">
+                <option value="change_4h" selected>4س</option>
+                <option value="change_1h">1س</option>
+                <option value="change_15m">15م</option>
+                <option value="change_5m">5م</option>
+              </select>
+            </th>
+            <th>RSI</th>
+            <th>تقاطع EMA</th>
+            <th>الشموع منذ الاكتشاف</th>
+            <th>وقت الاكتشاف</th>
+            <th>الحجم</th>
+            <th>سياق يومي</th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div id="empty" class="empty hidden">لا توجد نتائج بعد — انتظر اكتمال أول دورة مسح.</div>
   </div>
-  <div id="empty" class="empty hidden">لا توجد نتائج بعد — انتظر اكتمال أول دورة مسح.</div>
+  <div id="table-history" class="hidden">
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>الرمز</th>
+            <th>الفريم</th>
+            <th>وقت الاكتشاف</th>
+            <th title="سعر نقطة تقاطع EMA عند أول اكتشاف + نسبة التغير حتى الآن">سعر الإشارة</th>
+            <th>RSI عند التقاطع</th>
+            <th>سياق يومي</th>
+            <th>السعر الحالي</th>
+          </tr>
+        </thead>
+        <tbody id="history-rows"></tbody>
+      </table>
+    </div>
+    <div id="history-empty" class="empty hidden">لا توجد إشارات في آخر 7 أيام.</div>
+  </div>
 </div>
 
 <footer>
@@ -232,6 +255,9 @@ let refreshSeconds = 60;
 let changeField = 'change_4h';
 let lastSymbols = [];
 let selectedTf = null; // set from server config on first load
+let historyTf = 'all'; // local timeframe filter of the history tab: 'all' | '1H' | '4H'
+let historySignals = [];
+let lastTimeframes = [];
 
 function tfLabel(tf) {
   const m = /^(\d+)([mHhDdWw])$/.exec(tf || '');
@@ -253,6 +279,24 @@ function renderTfToggle(timeframes) {
     b.className = 'tab tf-btn' + (tf === selectedTf ? ' active' : '');
     b.dataset.tf = tf;
     b.textContent = tfLabel(tf);
+    wrap.appendChild(b);
+  });
+}
+
+// Local timeframe filter of the history tab only ("الاثنان/الكل" + each
+// configured timeframe) — independent of the global tf-toggle above.
+function renderHistoryTf(timeframes) {
+  const wrap = $('history-tf');
+  wrap.innerHTML = '';
+  const list = timeframes || [];
+  lastTimeframes = list;
+  const opts = [['all', list.length > 1 ? 'الاثنان' : 'الكل']];
+  list.forEach((tf) => opts.push([tf, tfLabel(tf)]));
+  opts.forEach(([val, label]) => {
+    const b = document.createElement('button');
+    b.className = 'tab tf-hist' + (val === historyTf ? ' active' : '');
+    b.dataset.tfh = val;
+    b.textContent = label;
     wrap.appendChild(b);
   });
 }
@@ -400,7 +444,7 @@ function fmtClock(ts) {
 function renderSymbols(symbols) {
   const tb = $('rows');
   tb.innerHTML = '';
-  $('empty').classList.toggle('hidden', symbols.length > 0);
+  $('empty').classList.toggle('hidden', view === 'history' || symbols.length > 0);
   const isMatchedView = view === 'matched';
   const rows = (isMatchedView ? symbols.filter((r) => r.matched === 1) : symbols).slice();
   // Sort by the selected change period, descending (highest positive first,
@@ -439,15 +483,80 @@ function renderSymbols(symbols) {
   });
 }
 
+// ---------- History tab (سجل الإشارات) ----------
+
+/** Signal-price cell: cross price at first detection + % move vs the live price. */
+function historySignalCell(r) {
+  const price = Number.isFinite(r.cross_price) ? r.cross_price
+    : (Number.isFinite(r.price) ? r.price : null); // legacy rows before cross_price
+  if (price == null) return '<span class="muted">—</span>';
+  const sp = `<span class="num">${fmtPrice(price)}</span>`;
+  const cur = Number.isFinite(r.live_ticker_price) ? r.live_ticker_price
+    : (Number.isFinite(r.live_price) ? r.live_price : null);
+  if (cur == null || cur <= 0 || cur === price) return sp;
+  const pct = ((cur - price) / price) * 100;
+  const cls = pct >= 0 ? 'pos' : 'neg';
+  return `${sp}<span class="num ${cls}" style="display:block;font-size:11px;">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% منذ الإشارة</span>`;
+}
+
+/** Live price cell for the history tab: latest ticker (fallback latest candle). */
+function historyLiveCell(r) {
+  const cur = Number.isFinite(r.live_ticker_price) ? r.live_ticker_price
+    : (Number.isFinite(r.live_price) ? r.live_price : null);
+  if (cur == null) return '<span class="muted">—</span>';
+  return `<span class="num">${fmtPrice(cur)}</span>`;
+}
+
+function renderHistory() {
+  const tb = $('history-rows');
+  tb.innerHTML = '';
+  const showEmpty = view === 'history' && historySignals.length === 0;
+  $('history-empty').classList.toggle('hidden', !showEmpty);
+
+  historySignals.forEach((r) => {
+    const tr = document.createElement('tr');
+    const warn = r.higher_tf_warning
+      ? `<span class="pill warn" title="${r.higher_tf_warning.replace(/"/g, '&quot;').replace(/</g, '&lt;')}">⚠️</span>`
+      : '<span class="pill off">—</span>';
+    tr.innerHTML = `
+      <td><span class="sym">${r.symbol.replace('-USDT', '')}</span><span class="muted">/USDT</span></td>
+      <td>${tfLabel(r.timeframe)}</td>
+      <td>${clockTime(r.detected_at)}</td>
+      <td>${historySignalCell(r)}</td>
+      <td>${fmtRsi(r.rsi)}</td>
+      <td>${warn}</td>
+      <td>${historyLiveCell(r)}</td>
+    `;
+    tb.appendChild(tr);
+  });
+}
+
+/** Show the table + timeframe filter of the active view, hide the rest. */
+function applyViewUI() {
+  const isHistory = view === 'history';
+  $('table-current').classList.toggle('hidden', isHistory);
+  $('table-history').classList.toggle('hidden', !isHistory);
+  $('history-tf').classList.toggle('hidden', !isHistory);
+  if (isHistory) $('empty').classList.add('hidden');
+  else $('history-empty').classList.add('hidden');
+  renderHistory();
+}
+
 async function refresh() {
   try {
     showError('');
     const tf = selectedTf || '';
     const q = tf ? '?timeframe=' + encodeURIComponent(tf) : '';
-    const [ov, sym] = await Promise.all([
+    const needHistory = view === 'history';
+    const tasks = [
       fetch('/api/overview' + q).then(r => r.json()),
       fetch('/api/symbols' + q).then(r => r.json()),
-    ]);
+    ];
+    if (needHistory) {
+      const hq = historyTf === 'all' ? '' : '&timeframe=' + encodeURIComponent(historyTf);
+      tasks.push(fetch('/api/signals?days=7&limit=300' + hq).then(r => r.json()));
+    }
+    const [ov, sym, hist] = await Promise.all(tasks);
 
     statusUI(ov.status);
     if (ov.lastError && ov.status === 'error') showError('آخر خطأ: ' + ov.lastError);
@@ -483,11 +592,16 @@ async function refresh() {
 
     selectedTf = selectedTf || ov.timeframe;
     renderTfToggle(ov.timeframes || [ov.timeframe]);
+    renderHistoryTf(ov.timeframes || [ov.timeframe]);
     $('strategy').textContent =
       `| EMA ${ov.emaFast}/${ov.emaSlow} · RSI ${ov.rsiMin}–${ov.rsiMax} · حجم SMA ${ov.volumeSma} · إطار ${tfLabel(selectedTf)}`;
 
     renderSymbols(sym.symbols);
     lastSymbols = sym.symbols;
+    if (needHistory && hist) {
+      historySignals = Array.isArray(hist.signals) ? hist.signals : [];
+      renderHistory();
+    }
     $('last-updated').textContent = new Date().toLocaleTimeString('en-US');
   } catch (e) {
     showError('تعذّر الاتصال بالخادم. تأكد من تشغيل الخدمة: ' + e.message);
@@ -510,8 +624,18 @@ document.querySelectorAll('.tab[data-view]').forEach((btn) => {
     document.querySelectorAll('.tab[data-view]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     view = btn.dataset.view;
+    applyViewUI();
     refresh();
   });
+});
+
+// History tab's own timeframe filter (all / single) — refetches from the API.
+$('history-tf').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tf-hist');
+  if (!btn || btn.dataset.tfh === historyTf) return;
+  historyTf = btn.dataset.tfh;
+  renderHistoryTf(lastTimeframes); // rebuild so the active button updates
+  refresh();
 });
 
 // Timeframe toggle (delegated): switching re-fetches from the backend for the

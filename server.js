@@ -108,6 +108,31 @@ app.get('/api/symbols', async (req, res) => {
   }
 });
 
+// Signal history (dashboard tab "سجل الإشارات"): consecutive matched cycles of
+// the same (symbol, timeframe) grouped into ONE episode — first-cycle values
+// for detection time / signal price / cross RSI / daily warning, plus the live
+// ticker from the symbol's latest scan for the retrospective % move. Reads
+// `scans` (NOT `alerts`, which are deleted when a signal ends).
+app.get('/api/signals', async (req, res) => {
+  try {
+    const DAY_MS = 24 * 3600 * 1000;
+    const days = Math.min(30, Math.max(1, Number(req.query.days) || 7));
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 300));
+    const tfs = String(req.query.timeframe || '')
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => config.timeframes.includes(t));
+    const signals = await db.signalHistory({
+      sinceMs: Date.now() - days * DAY_MS,
+      timeframe: tfs,
+      limit,
+    });
+    res.json({ signals, days, timeframe: tfs, limit, asOf: Date.now() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use((req, res, next) => {
   if (req.method === 'GET' && (req.path === '/' || req.path === '/index.html')) {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
